@@ -50,6 +50,13 @@ load_decryption_certs_keys(const char *dirname)
         strcat(path, "/");
         strcat(path, de->d_name);
 
+        if (de->d_type == DT_UNKNOWN) {
+            struct stat sb;
+            if (! (stat(path, &sb) == 0 && S_ISREG(sb.st_mode))) {
+                continue;
+            }
+        }
+
         file = fopen(path, "r");
         if (file == NULL)
             return NULL;
