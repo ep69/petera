@@ -42,27 +42,30 @@ cleanup_crypt_device(crypt_device **cd)
     crypt_free(*cd);
 }
 
+/* Generate a hex key from nbytes of random data.
+ * The hex parameter must be at least 2 * nbytes + 1. */
 static int
-generate_key(uint8_t *key, size_t size, char *hexkey)
+generate_key(size_t nbytes, char *hex)
 {
+    uint8_t key[nbytes];
     AUTO(FILE, file);
 
     file = fopen("/dev/urandom", "r");
     if (file == NULL)
         return -errno;
 
-    if (fread(key, 1, size, file) != size)
+    if (fread(key, 1, nbytes, file) != nbytes)
         return -errno;
 
-    for (size_t i = 0; i < size; i++)
-        snprintf(&hexkey[i * 2], 3, "%02X", key[i]);
+    for (size_t i = 0; i < nbytes; i++)
+        snprintf(&hex[i * 2], 3, "%02X", key[i]);
 
     return 0;
 }
 
 static int
-make_keyfile(crypt_device *cd, const char *keydir, const uint8_t *rand,
-             size_t size, char *argv[])
+make_keyfile(crypt_device *cd, const char *keydir, const char *rand,
+             char *argv[])
 {
     const char *uuid = NULL;
     char keyfile[PATH_MAX];
@@ -81,15 +84,15 @@ make_keyfile(crypt_device *cd, const char *keydir, const uint8_t *rand,
     else {
         AUTO_FD(wpipe);
 
-        if (petera_pipe(&rpipe, &wpipe) != 0)
+        if (deo_pipe(&rpipe, &wpipe) != 0)
             return -errno;
 
         /* NOTE: this code depends on the kernel's pipe buffer being larger
          * than size. This should always be the case with these short keys. */
-        written = write(wpipe, rand, size);
+        written = write(wpipe, rand, strlen(rand));
         if (written < 0)
             return -errno;
-        if (written != (ssize_t) size)
+        if (written != (ssize_t) strlen(rand))
             return -EMSGSIZE;
     }
 
@@ -97,7 +100,7 @@ make_keyfile(crypt_device *cd, const char *keydir, const uint8_t *rand,
     if (wfile < 0)
         return -errno;
 
-    err = petera_run(argv, rpipe, wfile);
+    err = deo_run(argv, rpipe, wfile);
     if (err != 0) {
         unlink(keyfile);
         return -err;
@@ -116,7 +119,7 @@ option(char c, const char *arg, const char **misc)
 static int
 cryptsetup(int argc, char *argv[])
 {
-    const char *keydir = PETERA_CONF "/disks.d";
+    const char *keydir = DEO_CONF "/disks.d";
     const char *device = NULL;
     AUTO_STACK(X509, anchors);
     const char *type = NULL;
@@ -126,10 +129,10 @@ cryptsetup(int argc, char *argv[])
     int nerr = 0;
     int slot = 0;
 
-    if (!petera_getopt(argc, argv, "hk:d:", "a:", NULL, NULL, option, &keydir,
-                       option, &device, petera_anchors, &anchors)
+    if (!deo_getopt(argc, argv, "hk:d:", "a:", NULL, NULL, option, &keydir,
+                       option, &device, deo_anchors, &anchors)
         || device == NULL || sk_X509_num(anchors) == 0 || argc - optind < 1) {
-        fprintf(stderr, "Usage: petera cryptsetup "
+        fprintf(stderr, "Usage: deo cryptsetup "
                         "[-k <keydir>] -d <device> "
                         "-a <anchors> <target> [...]\n");
         return EXIT_FAILURE;
@@ -158,19 +161,18 @@ cryptsetup(int argc, char *argv[])
     if (keysize < 16) /* Less than 128-bits. */
         error(1, 0, "Key size (%d) is too small", keysize);
 
-    uint8_t key[keysize];
-    char hexkey[keysize * 2 + 1];
+    char hex[keysize * 2 + 1];
 
-    nerr = generate_key(key, sizeof(key), hexkey);
+    nerr = generate_key(keysize, hex);
     if (nerr != 0)
         error(1, -nerr, "Unable to generate key");
 
     slot = crypt_keyslot_add_by_passphrase(cd, CRYPT_ANY_SLOT, NULL, 0,
-                                           hexkey, sizeof(hexkey) - 1);
+                                           hex, sizeof(hex) - 1);
     if (slot < 0)
         error(1, -slot, "Unable to add passphrase");
 
-    nerr = make_keyfile(cd, keydir, key, sizeof(key), args);
+    nerr = make_keyfile(cd, keydir, hex, args);
     if (nerr != 0) {
         crypt_keyslot_destroy(cd, slot);
         error(1, -nerr, "Unable to make keyfile");
@@ -179,6 +181,6 @@ cryptsetup(int argc, char *argv[])
     return 0;
 }
 
-petera_plugin petera = {
-    cryptsetup, "Enable petera on a LUKS partition"
+deo_plugin deo = {
+    cryptsetup, "Enable deo on a LUKS partition"
 };
